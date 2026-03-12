@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: youtube-transcript-summarizer
+    runtime: docker
+    plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: WHISPER_MODEL
+        value: tiny
+      - key: MAX_CONCURRENT_REQUESTS
+        value: "1"
+      - key: CACHE_TTL_HOURS
+        value: "720"

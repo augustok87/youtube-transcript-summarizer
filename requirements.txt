@@ -1,0 +1,9 @@
+google-genai==1.66.0
+fastapi==0.115.12
+uvicorn==0.34.2
+python-dotenv==1.1.0
+pydantic==2.11.3
+youtube-transcript-api==1.2.4
+yt-dlp==2025.3.31
+faster-whisper==1.1.1
+sse-starlette==2.3.5
