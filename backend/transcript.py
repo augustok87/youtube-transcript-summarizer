@@ -4,6 +4,8 @@ import json
 import logging
 import tempfile
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -93,18 +95,17 @@ async def extract_transcript(url: str) -> TranscriptResponse:
             del _cache[cache_key]
             logger.info(f"Cache expired for {cache_key}")
 
-    title, duration = await _fetch_video_metadata(url)
-
     if platform == "youtube":
+        # Try captions first — no yt-dlp needed, works from datacenter IPs
         try:
-            result = await _extract_captions(video_id, title, duration)
-        except TranscriptError:
-            raise
+            result = await _extract_captions_standalone(video_id)
         except Exception as e:
             logger.info(f"Captions unavailable for {video_id}: {type(e).__name__}: {e}. Trying Whisper fallback.")
+            title, duration = await _fetch_video_metadata(url)
             result = await _extract_with_whisper(url, video_id, title, duration, platform)
     else:
-        # Non-YouTube platforms: Whisper only
+        # Non-YouTube platforms: yt-dlp metadata + Whisper
+        title, duration = await _fetch_video_metadata(url)
         logger.info(f"Platform '{platform}' — using Whisper transcription for {video_id}")
         result = await _extract_with_whisper(url, video_id, title, duration, platform)
 
@@ -140,10 +141,22 @@ async def _fetch_video_metadata(url: str) -> tuple[str, float]:
         raise TranscriptError("video_not_found", f"Could not find video: {url}")
 
 
-async def _extract_captions(video_id: str, title: str, duration: float) -> TranscriptResponse:
-    """Extract captions using youtube-transcript-api v1.2+ (YouTube only)."""
-    ytt_api = YouTubeTranscriptApi()
+async def _fetch_youtube_title(video_id: str) -> str:
+    """Fetch video title via YouTube oEmbed (public, no auth, works from datacenter IPs)."""
+    oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+    try:
+        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("title", "Unknown")
+    except Exception as e:
+        logger.warning(f"oEmbed title fetch failed for {video_id}: {e}")
+        return "Unknown"
 
+
+async def _extract_captions_standalone(video_id: str) -> TranscriptResponse:
+    """Extract captions + metadata without yt-dlp. Uses oEmbed for title, segments for duration."""
+    ytt_api = YouTubeTranscriptApi()
     result = ytt_api.fetch(video_id)
 
     snippets = result.snippets
@@ -151,7 +164,16 @@ async def _extract_captions(video_id: str, title: str, duration: float) -> Trans
     full_text = clean_transcript_text(full_text)
 
     language = result.language_code
-    logger.info(f"Extracted captions for {video_id}: {len(snippets)} segments, language={language}")
+
+    # Derive duration from the last caption segment
+    duration = 0.0
+    if snippets:
+        last = snippets[-1]
+        duration = last.start + last.duration
+
+    title = await _fetch_youtube_title(video_id)
+
+    logger.info(f"Extracted captions for {video_id}: {len(snippets)} segments, language={language}, duration={duration:.0f}s")
 
     return TranscriptResponse(
         video_id=video_id,
