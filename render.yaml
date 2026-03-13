@@ -12,3 +12,5 @@ services:
         value: "1"
       - key: CACHE_TTL_HOURS
         value: "720"
+      - key: YOUTUBE_COOKIES_B64
+        sync: false

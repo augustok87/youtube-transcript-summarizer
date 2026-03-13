@@ -8,9 +8,12 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+import http.cookiejar
+
+import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from backend.config import CACHE_TTL_HOURS, WHISPER_MODEL
+from backend.config import CACHE_TTL_HOURS, WHISPER_MODEL, YOUTUBE_COOKIES_PATH
 from backend.models import TranscriptResponse
 from backend.utils import clean_transcript_text, parse_video_url
 
@@ -120,12 +123,14 @@ async def _fetch_video_metadata(url: str) -> tuple[str, float]:
     """Fetch video title and duration using yt-dlp (metadata only, no download)."""
     import yt_dlp
 
-    opts = {
+    opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "no_check_extensions": True,
     }
+    if YOUTUBE_COOKIES_PATH:
+        opts["cookiefile"] = YOUTUBE_COOKIES_PATH
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -154,9 +159,26 @@ async def _fetch_youtube_title(video_id: str) -> str:
         return "Unknown"
 
 
+def _build_cookie_session() -> requests.Session | None:
+    """Build a requests.Session with YouTube cookies loaded, if available."""
+    if not YOUTUBE_COOKIES_PATH:
+        return None
+    try:
+        jar = http.cookiejar.MozillaCookieJar(YOUTUBE_COOKIES_PATH)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        session = requests.Session()
+        session.cookies = jar
+        logger.info(f"Loaded {len(jar)} cookies for YouTube authentication")
+        return session
+    except Exception as e:
+        logger.warning(f"Failed to load YouTube cookies: {e}")
+        return None
+
+
 async def _extract_captions_standalone(video_id: str) -> TranscriptResponse:
     """Extract captions + metadata without yt-dlp. Uses oEmbed for title, segments for duration."""
-    ytt_api = YouTubeTranscriptApi()
+    session = _build_cookie_session()
+    ytt_api = YouTubeTranscriptApi(http_client=session) if session else YouTubeTranscriptApi()
     result = ytt_api.fetch(video_id)
 
     snippets = result.snippets
@@ -199,7 +221,7 @@ async def _extract_with_whisper(
     audio_path = Path(tmpdir) / f"{safe_name}.mp3"
 
     try:
-        opts = {
+        opts: dict = {
             "format": "bestaudio[ext!=tar]/best[ext!=tar]/bestaudio/best",
             "outtmpl": str(audio_path.with_suffix(".%(ext)s")),
             "postprocessors": [{
@@ -212,6 +234,8 @@ async def _extract_with_whisper(
             # Rumble may serve files with unusual extensions (.tar) — skip extension safety check
             "no_check_extensions": True,
         }
+        if YOUTUBE_COOKIES_PATH:
+            opts["cookiefile"] = YOUTUBE_COOKIES_PATH
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
